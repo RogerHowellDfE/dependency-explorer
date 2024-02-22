@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+
+    <style>
+        html, body {
+            font-family: sans-serif;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        th, td {
+            border: 1px solid black;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #d2d2fa;
+            position: -webkit-sticky;
+            position: sticky;
+            top: 0;
+        }
+    </style>
+</head>
+<body>
+
+<div>
+    <label for="pat_input">GitHub Personal Access Token (PAT)</label>
+    <input id="pat_input" type="password"/>
+    <button id="savePatBtn">Save PAT to browser localStorage</button>
+</div>
+
+
+<button id="loadReposBtn">Load Repos</button>
+
+<button id="loadSbomsBtn">Load SBOMs</button>
+
+<button id="loadLanguagesBtn">Load Languages</button>
+
+<button id="refreshVisualsBtn">Refresh Visuals</button>
+
+
+<div id="statsContainer"></div>
+
+<div id="dependenciesTableContainer"></div>
+
+<div id="repoTableContainer"></div>
+
+
+<script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+
+<script type="module">
+    import {Octokit, App} from "https://esm.sh/octokit";
+
+
+    // Load PAT from browser localstorage
+    const patInput = document.getElementById("pat_input");
+    let pat = localStorage.getItem("github_pat") || '';
+    patInput.value = pat;
+
+    let octokit = new Octokit({
+        auth: pat,
+        userAgent: "myApp v1.2.3",
+    });
+
+
+    const db = new Dexie("RepoDatabase");
+    db.version(2).stores({
+        repos: `
+        &id,
+        &name,
+        private`,
+
+        sboms: `
+        repoFullName,
+        &name,
+        SPDXID
+        `,
+
+        languages: `
+        repoFullName,
+        &name
+        `,
+    });
+
+    const dataStore = {
+        repos: [],
+        sboms: [],
+        languages: [],
+        dependenciesMap: {},
+    };
+
+
+    // Load the page using previously-collected data (removes need to re-fetch on every page load/re-load)
+    await loadDataFromDexieIndexedDbStorage();
+
+    refreshVisuals();
+
+
+    document.getElementById("savePatBtn").addEventListener("click", () => {
+        pat = patInput.value;
+        localStorage.setItem("github_pat", pat);
+        console.log("Saved PAT to localstorage");
+
+        octokit = new Octokit({
+            auth: pat,
+            userAgent: "myApp v1.2.3",
+        });
+        console.log("refreshed / updated octokit instance with new PAT");
+    });
+
+    document.getElementById("loadReposBtn").addEventListener("click", async () => {
+        dataStore.repos = await loadRepositories("dfe-digital");
+        console.log("loaded repos:", dataStore.repos);
+
+        refreshVisuals();
+    });
+
+    document.getElementById("loadSbomsBtn").addEventListener("click", async () => {
+        if (dataStore.repos.length === 0) {
+            console.error("No repos loaded, not loading sboms.");
+            return;
+        }
+        dataStore.sboms = await loadSboms(dataStore.repos);
+        console.log("loaded sboms:", dataStore.sboms);
+
+
+        refreshVisuals();
+    });
+
+    document.getElementById("loadLanguagesBtn").addEventListener("click", async () => {
+        if (dataStore.repos.length === 0) {
+            console.error("No repos loaded, not loading languages.");
+            return;
+        }
+        await loadLanguages(dataStore.repos);
+    });
+
+    document.getElementById("refreshVisualsBtn").addEventListener("click", () => {
+        refreshVisuals();
+    });
+
+    function refreshVisuals() {
+        refreshStats('statsContainer', dataStore);
+        refreshRepoTable("repoTableContainer", dataStore);
+        refreshDependenciesTable("dependenciesTableContainer", dataStore);
+    }
+
+    function refreshRepoTable(containerId, dataStore) {
+        const containerElem = document.getElementById(containerId);
+
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const tbody = document.createElement("tbody");
+
+        const headerRow = document.createElement("tr");
+
+        const headerTexts = ["Repo Name", "Private", "Visibility", "Has SBOM?", "Dependencies", "Language info", "Stars", "Forks", "Watchers", "License", "Archived", "Disabled", "Open Issues/PRs", "Default branch"];
+        for (let i = 0; i < headerTexts.length; i++) {
+            const headerCell = document.createElement("th");
+            headerCell.textContent = headerTexts[i];
+            headerRow.appendChild(headerCell);
+        }
+
+        thead.appendChild(headerRow);
+
+        const sortedRepos = [...dataStore.repos].sort((a, b) => {
+            if (a.name.toLowerCase() < b.name.toLowerCase()) return -1;
+            if (a.name.toLowerCase() > b.name.toLowerCase()) return 1;
+            return 0;
+        });
+        console.debug("dataStore.repos:", dataStore.repos);
+        console.debug("sortedRepos:", sortedRepos);
+
+        for (let i = 0; i < sortedRepos.length; i++) {
+            const repo = sortedRepos[i];
+            const row = document.createElement("tr");
+
+            if (i % 2 === 0) {
+                row.style.backgroundColor = "#f2f2f2";
+            }
+
+            if (repo.archived) {
+                // strikethrough
+                row.style.textDecoration = "line-through";
+            }
+
+            const cells = [
+                (repo) => {
+                    const cell = document.createElement("td");
+                    // clicable link to repo
+                    const a = document.createElement('a');
+                    const linkText = document.createTextNode(repo.name);
+                    a.appendChild(linkText);
+                    a.title = repo.name;
+                    a.href = repo.html_url;
+                    a.target = "_blank";
+                    cell.appendChild(a);
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.private;
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.visibility;
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    const repoFullName = repo.full_name;
+                    const sbom = dataStore.sboms.find(sbom => sbom.repoFullName === repoFullName);
+                    if (sbom) {
+                        cell.textContent = "Yes";
+                    } else {
+                        cell.textContent = "No / Not Loaded";
+                    }
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+
+                    if (dataStore.dependenciesMap[repo.full_name] && dataStore.dependenciesMap[repo.full_name].dependencyTypeCounts) {
+                        let entries = Object.entries(dataStore.dependenciesMap[repo.full_name].dependencyTypeCounts);
+
+                        if (entries.length === 0) {
+                            cell.textContent = "No dependencies in SBOM";
+                            return cell;
+                        }
+
+                        let x = '<ul>';
+                        for (const [key, value] of entries) {
+                            x += '<li>' + key + ': ' + value + '</li>';
+                        }
+                        x += '</ul>';
+                        cell.innerHTML = x;
+                    } else {
+                        cell.textContent = 'N/A';
+                    }
+
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+
+                    const languages = dataStore.languages.find(l => l.repoFullName === repo.full_name);
+                    if (languages) {
+                        let entries = Object.entries(languages)
+                            .filter(([key]) => key !== "repoFullName");
+
+                        if (entries.length === 0) {
+                            cell.textContent = "GitHub returned no language info";
+                            return cell;
+                        }
+
+                        const total = entries.reduce((acc, [key, value]) => acc + value, 0);
+
+                        let x = '<ul>';
+                        for (const [key, value] of entries) {
+                            x += '<li>'
+                                // + '<strong>'
+                                + key
+                                // + '</strong>'
+                                + ': ' + value + ' (' + Math.round(1000 * (value / total)) / 10 + '%)' + '</li>';
+                        }
+                        x += '</ul>';
+                        cell.innerHTML = x;
+                    } else {
+                        cell.textContent = 'N/A or not loaded';
+                    }
+
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.stargazers_count;
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.forks_count;
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.watchers_count;
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    if (!repo.license) {
+                        cell.textContent = "No recognised license";
+                    } else {
+                        cell.textContent = repo.license.spdx_id;
+                    }
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.archived;
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.disabled;
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.open_issues_count;
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = repo.default_branch;
+                    return cell;
+                },
+            ];
+
+            for (let j = 0; j < cells.length; j++) {
+                row.appendChild(cells[j](repo));
+            }
+
+            tbody.appendChild(row);
+        }
+
+        table.appendChild(thead);
+        table.appendChild(tbody);
+
+        containerElem.innerHTML = "";
+        containerElem.appendChild(table);
+
+    }
+
+    function refreshDependenciesTable(containerId, dataStore) {
+        const containerElem = document.getElementById(containerId);
+
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const tbody = document.createElement("tbody");
+
+        const headerRow = document.createElement("tr");
+
+        const headerTexts = ["Dependency", "Version", "Repos"];
+        for (let i = 0; i < headerTexts.length; i++) {
+            const headerCell = document.createElement("th");
+            headerCell.textContent = headerTexts[i];
+            headerRow.appendChild(headerCell);
+        }
+
+        thead.appendChild(headerRow);
+
+
+        const allDependencies = {};
+
+        Object.entries(dataStore.dependenciesMap).forEach(([key, value]) => {
+            const deps = value.dependencies;
+            deps.forEach((value2) => {
+                const depName = value2.name;
+                allDependencies[depName] = allDependencies[depName] || {};
+
+                const version = value2.versionInfo;
+                allDependencies[depName][version] = allDependencies[depName][version] || [];
+
+                allDependencies[depName][version].push(key);
+            });
+        });
+
+        console.info('allDependencies', allDependencies);
+
+
+        const sortedDependencyNames = Object.keys(allDependencies).sort((a, b) => {
+            if (a.toLowerCase() < b.toLowerCase()) return -1;
+            if (a.toLowerCase() > b.toLowerCase()) return 1;
+            return 0;
+        });
+
+        console.info('sortedDependencyNames', sortedDependencyNames);
+
+        for (let i = 0; i < sortedDependencyNames.length; i++) {
+            const depName = sortedDependencyNames[i];
+            let dependenciesForName = allDependencies[depName];
+            const versions = Object.keys(dependenciesForName);
+
+            const sortedVersions = [...versions].sort((a, b) => {
+                if (a.toLowerCase() < b.toLowerCase()) return -1;
+                if (a.toLowerCase() > b.toLowerCase()) return 1;
+                return 0;
+            });
+
+            for (let j = 0; j < sortedVersions.length; j++) {
+                const version = sortedVersions[j];
+                const reposForVersion = dependenciesForName[version];
+
+                const row = document.createElement("tr");
+
+                if (i % 2 === 0) {
+                    row.style.backgroundColor = "#f2f2f2";
+                }
+
+                const cells = [
+                    (x) => {
+                        const cell = document.createElement("td");
+                        cell.textContent = depName;
+                        return cell;
+                    },
+                    (x) => {
+                        const cell = document.createElement("td");
+                        cell.textContent = version;
+                        return cell;
+                    },
+                    (x) => {
+                        const cell = document.createElement("td");
+                        let output = '<ul>';
+                        for (let k = 0; k < reposForVersion.length; k++) {
+                            let t = dataStore.repos.find(r => r.full_name === reposForVersion[k]);
+                            output += '<li>'
+                                // link to repo
+                                + '<a href="' + t.html_url + '" target="_blank">'
+                                + reposForVersion[k]
+                                + '</a>'
+                                + '</li>';
+                        }
+                        output += '</ul>';
+                        cell.innerHTML = output;
+                        return cell;
+                    },
+                ];
+
+                for (let k = 0; k < cells.length; k++) {
+                    row.appendChild(cells[k](depName, version, reposForVersion));
+                }
+
+                tbody.appendChild(row);
+            }
+        }
+
+
+        table.appendChild(thead);
+        table.appendChild(tbody);
+
+        containerElem.innerHTML = "";
+        containerElem.appendChild(table);
+    }
+
+
+    function refreshStats(containerId, dataStore) {
+        const containerElem = document.getElementById(containerId);
+
+        const dependenciesMap = {};
+
+        // for each sbom
+        let limit = dataStore.sboms?.length ?? 0;
+        // let limit = 10;
+        for (let i = 0; i < limit; i++) {
+            const sbom = dataStore.sboms[i];
+            // console.log("sbom:", sbom);
+
+            // get dependency relationships
+            const dependsOnRelationships = sbom.relationships.filter(x => x.relationshipType === "DEPENDS_ON");
+
+            const dependencies = sbom.packages.filter(x => {
+                return dependsOnRelationships.some(y => y.relatedSpdxElement === x.SPDXID);
+            });
+
+            const foo = {};
+            foo.dependencies = dependencies;
+
+            foo.dependencyNames = dependencies.map(x => x.name);
+            foo.uniqueDependencyNames = new Set(foo.dependencyNames);
+
+            foo.dependencyTypes = foo.dependencyNames.map(x => x.split(":")[0]);
+            foo.uniqueDependencyTypes = new Set(foo.dependencyTypes);
+
+            foo.dependencyTypeCounts = {};
+            foo.dependencyTypes.forEach(x => {
+                foo.dependencyTypeCounts[x] = foo.dependencyTypeCounts[x] ? foo.dependencyTypeCounts[x] + 1 : 1;
+            });
+
+            dependenciesMap[sbom.repoFullName] = foo;
+        }
+        console.info("dependenciesMap:", dependenciesMap);
+
+        dataStore.dependenciesMap = dependenciesMap;
+
+
+        const allDependencies = Object.values(dependenciesMap)
+            .flatMap(x => x.dependencies);
+
+        const allDependencyIds = allDependencies.map(x => x.SPDXID);
+        const allDependencyNames = allDependencies.map(x => x.name);
+        const allUniqueDependencyNames = new Set(allDependencyNames);
+
+        const allDependencyTypes = allDependencyNames.map(x => x.split(":")[0]);
+        const allUniqueDependencyTypes = new Set(allDependencyTypes);
+
+        const allDependencyTypeCounts = {};
+        allDependencyTypes.forEach(x => {
+            allDependencyTypeCounts[x] = allDependencyTypeCounts[x] ? allDependencyTypeCounts[x] + 1 : 1;
+        });
+
+        console.info("allDependencyTypeCounts:", allDependencyTypeCounts);
+
+
+        const stats = {
+            totalRepos: dataStore.repos.length,
+            totalSboms: dataStore.sboms.length,
+            reposWithSbom: dataStore.sboms.length,
+            allDependencyTypeCounts: allDependencyTypeCounts,
+
+        };
+
+        const statsElem = document.createElement("div");
+        statsElem.innerHTML = `
+        <h2>Stats</h2>
+        <p>Total Repos: ${stats.totalRepos}</p>
+        <p>Total SBOMs: ${stats.totalSboms}</p>
+        <p>Repos with SBOM: ${stats.reposWithSbom}</p>
+        <p>All Dependency Types: ${JSON.stringify(stats.allDependencyTypeCounts)}</p>
+        `;
+
+        containerElem.innerHTML = "";
+        containerElem.appendChild(statsElem);
+
+    }
+
+
+    async function loadLanguages(repos) {
+
+        // TODO: Consider parallelisation of promises/fetches etc here
+
+        for (let i = 0; i < repos.length; i++) {
+            const repo = repos[i];
+            const repoFullName = repo.full_name;
+
+            // if already loaded into cache, skip
+            const existingLanguages = await db.languages.get({repoFullName: repoFullName});
+            if (existingLanguages) {
+                console.log("languages for %s already loaded", repoFullName);
+                continue;
+            }
+
+            try {
+                const languages = await octokit.rest.repos.listLanguages({
+                    owner: "dfe-digital",
+                    repo: repo.name,
+                });
+
+                const languagesData = languages.data;
+                languagesData.repoFullName = repoFullName;
+
+                await db.languages.put(languagesData);
+                console.log("languages for", repo.name, languagesData);
+            } catch (e) {
+                console.error("Error getting languages for %s: %s", repo.name, e);
+            }
+        }
+    }
+
+
+    /**
+     * CAUTION: This function will load all repositories for the given organization, and may be rate-limit hungry.
+     */
+    async function loadSboms(repos) {
+
+        // TODO: Consider parallelisation of promises/fetches etc here
+
+        // for each repo, get the sbom
+        for (let i = 0; i < repos.length; i++) {
+            const repo = repos[i];
+            const repoFullName = repo.full_name;
+
+            // if already loaded into cache, skip
+            const existingSbom = await db.sboms.get({repoFullName: repoFullName});
+            if (existingSbom) {
+                console.log("sbom for %s already loaded", repoFullName);
+                continue;
+            }
+
+            try {
+                const sbom = await octokit.rest.dependencyGraph.exportSbom({
+                    owner: "dfe-digital",
+                    repo: repo.name,
+                });
+
+                const sbomData = sbom.data.sbom;
+                sbomData.repoFullName = repoFullName;
+
+                await db.sboms.put(sbomData);
+                console.log("sbom for", repo.name, sbomData);
+            } catch (e) {
+                console.error("Error getting sbom for %s: %s", repo.name, e);
+            }
+        }
+    }
+
+
+    /**
+     * CAUTION: This function will load all repositories for the given organization, and may be rate-limit hungry.
+     */
+    async function loadRepositories(orgName) {
+        const start = new Date();
+        console.log("Loading repositories for %s", orgName);
+
+        const allRepos = [];
+
+        const iterator = octokit.paginate.iterator(octokit.rest.repos.listForOrg, {
+            org: "dfe-digital",
+            per_page: 100,
+        });
+
+        let i = 0;
+        // let limit = 10;
+        let limit = Number.MAX_SAFE_INTEGER;
+
+        let pageNumber = 0;
+        for await (const {data: repos} of iterator) {
+            pageNumber++;
+            console.debug("Loaded API request, page %d containing %d repos", pageNumber, repos.length);
+            for (const repo of repos) {
+                //console.log("Repo #%d: %s", repo.id, repo.name);
+                allRepos.push(repo);
+                await db.repos.put(repo);
+                i++;
+            }
+            if (i >= limit) break;
+        }
+
+        // // Do all in one go
+        // const repos = await octokit.paginate(octokit.rest.repos.listForOrg, {
+        //     org: orgName,
+        //     per_page: 100,
+        // });
+        const end = new Date();
+        console.log("Loaded %d repositories in %dms", allRepos.length, end - start);
+
+        return allRepos;
+    }
+
+
+    async function loadDataFromDexieIndexedDbStorage() {
+        const storedRepos = await db.repos.toArray();
+        if (storedRepos && storedRepos.length > 0) {
+            dataStore.repos = storedRepos;
+            console.log("Loaded repos from indexeddb:", storedRepos);
+        } else {
+            console.log("No repos in indexeddb");
+        }
+
+        const storedSboms = await db.sboms.toArray();
+        if (storedSboms && storedSboms.length > 0) {
+            dataStore.sboms = storedSboms;
+            console.log("Loaded sboms from indexeddb:", storedSboms);
+        } else {
+            console.log("No sboms in indexeddb");
+        }
+
+        const storedLanguages = await db.languages.toArray();
+        if (storedLanguages && storedLanguages.length > 0) {
+            dataStore.languages = storedLanguages;
+            console.log("Loaded languages from indexeddb:", storedLanguages);
+        } else {
+            console.log("No languages in indexeddb");
+        }
+
+    }
+
+</script>
+
+</body>
+</html>
