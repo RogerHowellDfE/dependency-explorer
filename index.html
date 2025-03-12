@@ -161,7 +161,7 @@
 
         const headerRow = document.createElement("tr");
 
-        const headerTexts = ["Repo Name", "Private", "Visibility", "Has SBOM?", "Dependencies", "Language info", "Stars", "Forks", "Watchers", "License", "Archived", "Disabled", "Open Issues/PRs", "Default branch"];
+        const headerTexts = ["Repo Name", "Is Fork", "Is Private", "Visibility", "Has SBOM?", "Dependencies", "Language info", "Stars", "Forks", "Watchers", "License", "Archived", "Disabled", "Open Issues/PRs", "Default branch"];
         for (let i = 0; i < headerTexts.length; i++) {
             const headerCell = document.createElement("th");
             headerCell.textContent = headerTexts[i];
@@ -189,6 +189,13 @@
             if (repo.archived) {
                 // strikethrough
                 row.style.textDecoration = "line-through";
+                row.style.color = "gray";
+            }
+            
+            if (repo.fork) {
+                // strikethrough
+                row.style.textDecoration = "line-through";
+                row.style.color = "purple";
             }
 
             const cells = [
@@ -206,7 +213,24 @@
                 },
                 (repo) => {
                     const cell = document.createElement("td");
+                    cell.textContent = repo.fork;
+                    if(repo.fork) {
+                        cell.style.fontWeight = "bold";
+                    }
+                    if(!repo.fork) {
+                        cell.style.color = "gray";
+                    }
+                    return cell;
+                },
+                (repo) => {
+                    const cell = document.createElement("td");
                     cell.textContent = repo.private;
+                    if(repo.private) {
+                        cell.style.fontWeight = "bold";
+                    }
+                    if(!repo.private) {
+                        cell.style.color = "gray";
+                    }
                     return cell;
                 },
                 (repo) => {
@@ -282,16 +306,25 @@
                 (repo) => {
                     const cell = document.createElement("td");
                     cell.textContent = repo.stargazers_count;
+                    if(repo.stargazers_count === 0) {
+                        cell.style.color = "gray";
+                    }
                     return cell;
                 },
                 (repo) => {
                     const cell = document.createElement("td");
                     cell.textContent = repo.forks_count;
+                    if(repo.forks_count === 0) {
+                        cell.style.color = "gray";
+                    }
                     return cell;
                 },
                 (repo) => {
                     const cell = document.createElement("td");
                     cell.textContent = repo.watchers_count;
+                    if(repo.watchers_count === 0) {
+                        cell.style.color = "gray";
+                    }
                     return cell;
                 },
                 (repo) => {
@@ -306,11 +339,23 @@
                 (repo) => {
                     const cell = document.createElement("td");
                     cell.textContent = repo.archived;
+                    if(repo.archived) {
+                        cell.style.fontWeight = "bold";
+                    }
+                    if(!repo.archived) {
+                        cell.style.color = "gray";
+                    }
                     return cell;
                 },
                 (repo) => {
                     const cell = document.createElement("td");
                     cell.textContent = repo.disabled;
+                    if(repo.disabled) {
+                        cell.style.fontWeight = "bold";
+                    }
+                    if(!repo.disabled) {
+                        cell.style.color = "gray";
+                    }
                     return cell;
                 },
                 (repo) => {
@@ -349,7 +394,7 @@
 
         const headerRow = document.createElement("tr");
 
-        const headerTexts = ["Dependency", "Version", "Repos"];
+        const headerTexts = ["Dependency", "Version", "Type", "Repos"];
         for (let i = 0; i < headerTexts.length; i++) {
             const headerCell = document.createElement("th");
             headerCell.textContent = headerTexts[i];
@@ -370,7 +415,7 @@
                 const version = value2.versionInfo;
                 allDependencies[depName][version] = allDependencies[depName][version] || [];
 
-                allDependencies[depName][version].push(key);
+                allDependencies[depName][version].push({ repo: key, type: value2.externalRefs.find(ref => ref.referenceCategory === "PACKAGE-MANAGER").referenceLocator.split(':')[1].split('/')[0] });
             });
         });
 
@@ -419,13 +464,18 @@
                     },
                     (x) => {
                         const cell = document.createElement("td");
+                        cell.textContent = reposForVersion[0].type;
+                        return cell;
+                    },
+                    (x) => {
+                        const cell = document.createElement("td");
                         let output = '<ul>';
                         for (let k = 0; k < reposForVersion.length; k++) {
-                            let t = dataStore.repos.find(r => r.full_name === reposForVersion[k]);
+                            let t = dataStore.repos.find(r => r.full_name === reposForVersion[k].repo);
                             output += '<li>'
                                 // link to repo
                                 + '<a href="' + t.html_url + '" target="_blank">'
-                                + reposForVersion[k]
+                                + reposForVersion[k].repo
                                 + '</a>'
                                 + '</li>';
                         }
@@ -459,17 +509,22 @@
 
         // for each sbom
         let limit = dataStore.sboms?.length ?? 0;
-        // let limit = 10;
+        let testing = false;
+        if(testing) {
+            limit = 10;  // smaller limit for testing
+        }
         for (let i = 0; i < limit; i++) {
             const sbom = dataStore.sboms[i];
-            // console.log("sbom:", sbom);
+            console.debug("Processing SBOM:", sbom);
 
             // get dependency relationships
             const dependsOnRelationships = sbom.relationships.filter(x => x.relationshipType === "DEPENDS_ON");
+            console.debug("Depends on relationships:", dependsOnRelationships);
 
             const dependencies = sbom.packages.filter(x => {
                 return dependsOnRelationships.some(y => y.relatedSpdxElement === x.SPDXID);
             });
+            console.debug("Dependencies:", dependencies);
 
             const foo = {};
             foo.dependencies = dependencies;
@@ -477,7 +532,11 @@
             foo.dependencyNames = dependencies.map(x => x.name);
             foo.uniqueDependencyNames = new Set(foo.dependencyNames);
 
-            foo.dependencyTypes = foo.dependencyNames.map(x => x.split(":")[0]);
+            foo.dependencyTypes = dependencies.map(x => {
+                const externalRef = x.externalRefs.find(ref => ref.referenceCategory === "PACKAGE-MANAGER");
+                const type = externalRef ? externalRef.referenceLocator.split(':')[1].split('/')[0] : "unknown";
+                return type;
+            });
             foo.uniqueDependencyTypes = new Set(foo.dependencyTypes);
 
             foo.dependencyTypeCounts = {};
@@ -491,31 +550,64 @@
 
         dataStore.dependenciesMap = dependenciesMap;
 
-
         const allDependencies = Object.values(dependenciesMap)
             .flatMap(x => x.dependencies);
+        console.debug("All dependencies:", allDependencies);
 
-        const allDependencyIds = allDependencies.map(x => x.SPDXID);
-        const allDependencyNames = allDependencies.map(x => x.name);
-        const allUniqueDependencyNames = new Set(allDependencyNames);
+        const allDependencyTypes = allDependencies.map(x => {
+            const externalRef = x.externalRefs.find(ref => ref.referenceCategory === "PACKAGE-MANAGER");
+            const type = externalRef ? externalRef.referenceLocator.split(':')[1].split('/')[0] : "unknown";
+            return type;
+        });
 
-        const allDependencyTypes = allDependencyNames.map(x => x.split(":")[0]);
         const allUniqueDependencyTypes = new Set(allDependencyTypes);
 
         const allDependencyTypeCounts = {};
+        const uniqueDependencyTypeCounts = {};
+        const uniqueDependencyVersionTypeCounts = {};
+
         allDependencyTypes.forEach(x => {
             allDependencyTypeCounts[x] = allDependencyTypeCounts[x] ? allDependencyTypeCounts[x] + 1 : 1;
         });
 
-        console.info("allDependencyTypeCounts:", allDependencyTypeCounts);
+        allDependencies.forEach(x => {
+            const externalRef = x.externalRefs.find(ref => ref.referenceCategory === "PACKAGE-MANAGER");
+            const type = externalRef ? externalRef.referenceLocator.split(':')[1].split('/')[0] : "unknown";
+            uniqueDependencyTypeCounts[type] = uniqueDependencyTypeCounts[type] || new Set();
+            uniqueDependencyTypeCounts[type].add(x.name);
 
+            uniqueDependencyVersionTypeCounts[type] = uniqueDependencyVersionTypeCounts[type] || new Set();
+            uniqueDependencyVersionTypeCounts[type].add(`${x.name}@${x.versionInfo}`);
+        });
+
+        console.info("allDependencyTypeCounts:", allDependencyTypeCounts);
+        console.info("uniqueDependencyTypeCounts:", uniqueDependencyTypeCounts);
+        console.info("uniqueDependencyVersionTypeCounts:", uniqueDependencyVersionTypeCounts);
+
+        const sortedAllDependencyTypeCounts = Object.entries(allDependencyTypeCounts).sort(([a], [b]) => a.localeCompare(b));
+        const sortedUniqueDependencyTypeCounts = Object.entries(uniqueDependencyTypeCounts).sort(([a], [b]) => a.localeCompare(b));
+        const sortedUniqueDependencyVersionTypeCounts = Object.entries(uniqueDependencyVersionTypeCounts).sort(([a], [b]) => a.localeCompare(b));
+
+        const totalDependencies = Object.values(allDependencyTypeCounts).reduce((acc, count) => acc + count, 0);
+        const totalUniqueDependencyNames = Object.values(uniqueDependencyTypeCounts).reduce((acc, set) => acc + set.size, 0);
+        const totalUniqueDependencyVersions = Object.values(uniqueDependencyVersionTypeCounts).reduce((acc, set) => acc + set.size, 0);
+
+        const licenseCounts = {};
+        dataStore.repos.forEach(repo => {
+            const license = repo.license ? repo.license.spdx_id : "No recognised license";
+            licenseCounts[license] = licenseCounts[license] ? licenseCounts[license] + 1 : 1;
+        });
+
+        const sortedLicenseCounts = Object.entries(licenseCounts).sort(([a], [b]) => a.localeCompare(b));
 
         const stats = {
             totalRepos: dataStore.repos.length,
             totalSboms: dataStore.sboms.length,
             reposWithSbom: dataStore.sboms.length,
-            allDependencyTypeCounts: allDependencyTypeCounts,
-
+            allDependencyTypeCounts: Object.fromEntries(sortedAllDependencyTypeCounts),
+            uniqueDependencyTypeCounts: Object.fromEntries(sortedUniqueDependencyTypeCounts.map(([k, v]) => [k, v.size])),
+            uniqueDependencyVersionTypeCounts: Object.fromEntries(sortedUniqueDependencyVersionTypeCounts.map(([k, v]) => [k, v.size])),
+            licenseCounts: Object.fromEntries(sortedLicenseCounts),
         };
 
         const statsElem = document.createElement("div");
@@ -524,14 +616,62 @@
         <p>Total Repos: ${stats.totalRepos}</p>
         <p>Total SBOMs: ${stats.totalSboms}</p>
         <p>Repos with SBOM: ${stats.reposWithSbom}</p>
-        <p>All Dependency Types: ${JSON.stringify(stats.allDependencyTypeCounts)}</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Dependency Ecosystem</th>
+                    <th>All Dependency Reference Count</th>
+                    <th>Unique References by Dependency Name</th>
+                    <th>% of All Reference Count</th>
+                    <th>Unique References by Dependency Name and Version</th>
+                    <th>% of All Reference Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${Object.keys(stats.allDependencyTypeCounts).map(type => `
+                    <tr>
+                        <td>${type}</td>
+                        <td style="text-align: right">${stats.allDependencyTypeCounts[type]}</td>
+                        <td style="text-align: right">${stats.uniqueDependencyTypeCounts[type]}</td>
+                        <td>${((stats.uniqueDependencyTypeCounts[type] / stats.allDependencyTypeCounts[type]) * 100).toFixed(2)}%</td>
+                        <td style="text-align: right">${stats.uniqueDependencyVersionTypeCounts[type]}</td>
+                        <td>${((stats.uniqueDependencyVersionTypeCounts[type] / stats.allDependencyTypeCounts[type]) * 100).toFixed(2)}%</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td><strong>Total</strong></td>
+                    <td style="text-align: right"><strong>${totalDependencies}</strong></td>
+                    <td style="text-align: right"><strong>${totalUniqueDependencyNames}</strong></td>
+                    <td>&nbsp;</td>
+                    <td style="text-align: right"><strong>${totalUniqueDependencyVersions}</strong></td>
+                    <td>&nbsp;</td>
+                </tr>
+            </tfoot>
+        </table>
+        <h2>License Stats</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>License</th>
+                    <th>Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${Object.entries(stats.licenseCounts).map(([license, count]) => `
+                    <tr>
+                        <td>${license}</td>
+                        <td style="text-align: right">${count}</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
         `;
 
         containerElem.innerHTML = "";
         containerElem.appendChild(statsElem);
-
     }
-
 
     async function loadLanguages(repos) {
 
@@ -544,7 +684,7 @@
             // if already loaded into cache, skip
             const existingLanguages = await db.languages.get({repoFullName: repoFullName});
             if (existingLanguages) {
-                console.log("languages for %s already loaded", repoFullName);
+                console.log(i + "/" + repos.length + ": ", "languages for %s already loaded", repoFullName);
                 continue;
             }
 
@@ -558,9 +698,9 @@
                 languagesData.repoFullName = repoFullName;
 
                 await db.languages.put(languagesData);
-                console.log("languages for", repo.name, languagesData);
+                console.log(i + "/" + repos.length + ": ", "languages for", repo.name, languagesData);
             } catch (e) {
-                console.error("Error getting languages for %s: %s", repo.name, e);
+                console.error(i + "/" + repos.length + ": ", "Error getting languages for %s: %s", repo.name, e);
             }
         }
     }
@@ -581,7 +721,7 @@
             // if already loaded into cache, skip
             const existingSbom = await db.sboms.get({repoFullName: repoFullName});
             if (existingSbom) {
-                console.log("sbom for %s already loaded", repoFullName);
+                console.log(i + "/" + repos.length + ": ", "sbom for %s already loaded", repoFullName);
                 continue;
             }
 
@@ -595,9 +735,9 @@
                 sbomData.repoFullName = repoFullName;
 
                 await db.sboms.put(sbomData);
-                console.log("sbom for", repo.name, sbomData);
+                console.log(i + "/" + repos.length + ": ", "sbom for", repo.name, sbomData);
             } catch (e) {
-                console.error("Error getting sbom for %s: %s", repo.name, e);
+                console.error(i + "/" + repos.length + ": ", "Error getting sbom for %s: %s", repo.name, e);
             }
         }
     }
