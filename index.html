@@ -684,7 +684,7 @@
             // if already loaded into cache, skip
             const existingLanguages = await db.languages.get({repoFullName: repoFullName});
             if (existingLanguages) {
-                console.log(i + "/" + repos.length + ": ", "languages for %s already loaded", repoFullName);
+                console.log(`${i + 1}/${repos.length}: languages for ${repoFullName} already loaded`);
                 continue;
             }
 
@@ -698,9 +698,9 @@
                 languagesData.repoFullName = repoFullName;
 
                 await db.languages.put(languagesData);
-                console.log(i + "/" + repos.length + ": ", "languages for", repo.name, languagesData);
+                console.log(`${i + 1}/${repos.length}: languages for ${repo.name}`, languagesData);
             } catch (e) {
-                console.error(i + "/" + repos.length + ": ", "Error getting languages for %s: %s", repo.name, e);
+                console.error(`${i + 1}/${repos.length}: Error getting languages for ${repo.name}: ${e}`);
             }
         }
     }
@@ -721,7 +721,7 @@
             // if already loaded into cache, skip
             const existingSbom = await db.sboms.get({repoFullName: repoFullName});
             if (existingSbom) {
-                console.log(i + "/" + repos.length + ": ", "sbom for %s already loaded", repoFullName);
+                console.log(`${i + 1}/${repos.length}: sbom for ${repoFullName} already loaded`);
                 continue;
             }
 
@@ -735,9 +735,9 @@
                 sbomData.repoFullName = repoFullName;
 
                 await db.sboms.put(sbomData);
-                console.log(i + "/" + repos.length + ": ", "sbom for", repo.name, sbomData);
+                console.log(`${i + 1}/${repos.length}: sbom for ${repo.name}`, sbomData);
             } catch (e) {
-                console.error(i + "/" + repos.length + ": ", "Error getting sbom for %s: %s", repo.name, e);
+                console.error(`${i + 1}/${repos.length}: Error getting sbom for ${repo.name}: ${e}`);
             }
         }
     }
@@ -748,7 +748,7 @@
      */
     async function loadRepositories(orgName) {
         const start = new Date();
-        console.log("Loading repositories for %s", orgName);
+        console.log(`Loading repositories for ${orgName}`);
 
         const allRepos = [];
 
@@ -764,11 +764,12 @@
         let pageNumber = 0;
         for await (const {data: repos} of iterator) {
             pageNumber++;
-            console.debug("Loaded API request, page %d containing %d repos", pageNumber, repos.length);
+            console.debug(`Loaded API request, page ${pageNumber} containing ${repos.length} repos`);
             for (const repo of repos) {
                 //console.log("Repo #%d: %s", repo.id, repo.name);
                 allRepos.push(repo);
                 await db.repos.put(repo);
+                console.log(`Repo #${repo.id}: ${repo.name}`);
                 i++;
             }
             if (i >= limit) break;
@@ -780,7 +781,7 @@
         //     per_page: 100,
         // });
         const end = new Date();
-        console.log("Loaded %d repositories in %dms", allRepos.length, end - start);
+        console.log(`Loaded ${allRepos.length} repositories in ${end - start}ms`);
 
         return allRepos;
     }
